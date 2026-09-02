@@ -1,0 +1,10 @@
+project_id = "emergency-mesh"
+
+[db.seed]
+enabled = true
+sql_paths = [
+  "./seed/demo.sql",
+  "./seed/preparedness-demo.sql",
+  "./seed/capability-source-demo.sql",
+  "./seed/complete-fixture-demo.sql",
+]

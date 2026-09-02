@@ -1,0 +1,71 @@
+.em-weather-focus {
+  border-top: 4px solid #c6951b;
+}
+
+.em-weather-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 28px;
+}
+
+.em-weather-summary h2 {
+  font-size: 20px;
+  line-height: 1.25;
+  margin: 11px 0;
+}
+
+.em-weather-actions {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.em-weather-actions button,
+.em-weather-actions a {
+  text-align: center;
+}
+
+.em-weather-actions .em-link {
+  padding: 7px;
+}
+
+.em-weather-facts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 13px 0;
+}
+
+.em-weather-facts div {
+  border-left: 2px solid #c8d5db;
+  padding-left: 9px;
+}
+
+.em-weather-facts dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.em-weather-facts dd {
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 4px 0 0;
+}
+
+.em-source-link {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: bold;
+  padding: 7px 0;
+  text-decoration: underline;
+}
+
+@media (max-width: 720px) {
+  .em-weather-summary,
+  .em-weather-facts {
+    grid-template-columns: 1fr;
+  }
+}
