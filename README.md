@@ -1,36 +1,44 @@
 # Emergency Mesh
 
-Emergency Mesh is a fictional, deterministic capability-intelligence prototype for the OpenAI WebMCP Challenge 2026. It brings source evidence together to show a station’s readiness, test a planning scenario, identify a Station gap and prepare a human-approved support option.
+Emergency Mesh is a fictional, deterministic capability-intelligence prototype for the OpenAI WebMCP Challenge 2026. It combines source evidence to show a station’s readiness, test a planning scenario, identify a Station gap and prepare a human-reviewed support-request draft.
 
-Licensed under [Apache-2.0](LICENSE).
+**Live app:** `https://emergency-mesh.vercel.app`
 
-It is not CAD, dispatch, tasking, rostering, an LMS, asset management, live tracking, routing or tactical command. All locations, people, assets, incidents, policies and thresholds are fictional.
+**Source:** `https://github.com/MysonGee/emergency-mesh`
 
-Read [PROJECT_STATUS.md](PROJECT_STATUS.md) for the current state, [PRODUCT_BOUNDARY.md](PRODUCT_BOUNDARY.md) for non-negotiable scope, [UX_UI_STANDARDS.md](UX_UI_STANDARDS.md) for design expectations and [HANDOVER.md](HANDOVER.md) to continue work safely.
+**Licence:** [Apache-2.0](LICENSE)
 
-## What is implemented
+It is not CAD, dispatch, tasking, rostering, an LMS, asset management, live tracking, routing or tactical command. All people, locations, assets, incidents, policies and thresholds are fictional.
 
-- **Operational readiness:** a calculated dashboard of member availability, vehicle/equipment source status, compliance and capability impact. Its readiness profile is data-driven.
-- **People & assets:** all Harbour members plus full fleet/equipment filters and asset drill-down, based on fictional source records.
-- **Preparedness and Safety & compliance:** plan, maintenance, inspection, expiry and renewal evidence. It surfaces what is due and when; it does not manage the upstream systems.
-- **Capability scenarios:** manual planning-only status changes and AI-assisted analysis. Scenario completion moves to Operational overview by user choice.
-- **Operational overview:** deterministic capability outcome, a 12/24/36/48/72-hour forecast from declared availability and source asset return times, asset details, scenario reset and a Sydney OSM **Asset locations** map. Map assets/incidents are fictional source context, not live tracking.
-- **Local support and Requests & approvals:** Harbour is assessed first, then aggregate support may appear only after a gap. A supplying station retains ownership/minimum readiness and a human approves requests.
-- **Data & settings and Activity:** fictional data feeds, persisted source corrections and audit view through Supabase.
-- **Genuine WebMCP:** browser tool registration remains in the app. The optional server-side AI review is an additional, read-only demonstration and does not replace WebMCP.
+## What it demonstrates
 
-## Data and source boundary
+- Data-derived operational readiness from declared member availability, vehicle status and equipment status.
+- Evidence-led people/assets, preparedness, safety/compliance and asset issue views.
+- Deterministic planning outcomes, availability horizons, constraint explanation and a non-live, attributed OSM context map.
+- Harbour-first local support: aggregate donor-safe options appear only after a Station gap, and every request stays a human-reviewed draft.
+- Genuine WebMCP tools registered by the page with `document.modelContext.registerTool()`.
+- Optional server-side AI-assisted review using a server-only OpenAI key and four deterministic read tools. It supplements, never replaces, the browser WebMCP path.
+- Public judge access with no sign-in requirement. Supabase source evidence is read-only; demonstration amendments are validated, isolated to the current browser and never written back to Supabase.
+- Controlled asset amendments use Available, Deployed, Offline or Maintenance plus an optional offline-until date. Browser-local asset overrides flow through people/assets, readiness, preparedness, scenarios, overview, asset detail, relevant support logic and WebMCP evidence/calculations.
 
-Emergency Mesh consumes or simulates membership/availability, training currency, asset register, fleet, maintenance, safety/compliance and operational-management evidence. The normalized read adapter feeds readiness, capability calculation, overview, map, fleet, asset detail and source views from the same evidence snapshot. Asset issue evidence includes a fictional reported offline time, planned return and reason; it is not live tracking. These upstream systems remain authoritative. Emergency Mesh may save a fictional demonstration correction/audit record, but does not become their administration or source-of-truth system.
+## WebMCP collaboration
 
-Weather/BOM data is awareness only. It can prompt **Review capability**; it cannot activate members, create work, dispatch, deploy or initiate operations.
+Open the live app in ChatGPT’s in-app browser and ask what tools are available. The page exposes deterministic evidence, planning and support-draft tools. A browser agent can read readiness and safety evidence, assess a planning scenario, identify constraints and prepare a visible Local support draft for human review.
+
+It cannot dispatch, activate, allocate, transfer, approve, submit, route, track or change upstream source records. Deterministic evidence is the authority; an authorised human makes consequential decisions.
+
+## Judge-safe data amendments
+
+The competition build is public and has no authentication flow. To avoid exposing anonymous database writes, **Data & settings** reads Supabase source tables but saves demonstration amendments to bounded, validated browser storage. Changes are visible only in that browser and cannot affect another judge or the shared database. Asset changes are normalised into the deterministic client model so relevant views and WebMCP tools remain consistent. Refreshing preserves them in the same browser; clearing site data resets them.
+
+Asset record controls are constrained to four statuses: Available, Deployed, Offline and Maintenance. Offline may include an optional return date. Text fields are required, trimmed, length-limited and rendered through React escaping; local rows are capped at 150 per source.
 
 ## Setup
 
 1. Copy `.env.example` to `.env.local`.
-2. Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY`) if using Supabase/authentication.
-3. Add `OPENAI_API_KEY` only for the optional live server-side review. Never prefix it `NEXT_PUBLIC_`.
-4. In Supabase SQL Editor, apply migrations in `supabase/migrations/` in filename order, including `202609020001_asset_issue_evidence_and_horizon_demo.sql`, then apply the seed files in `supabase/seed/` in their documented order.
+2. Set `NEXT_PUBLIC_SUPABASE_URL` to `https://jbmpkhsmhumqopfkeooz.supabase.co` and set `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` for Supabase-backed source evidence. Do not include the variable name inside its value.
+3. Set `OPENAI_API_KEY` only to enable the optional server review; never expose it through `NEXT_PUBLIC_*`.
+4. Apply `supabase/migrations/` and seed files in filename order if creating a fresh database.
 5. Install and run:
 
    ```powershell
@@ -38,7 +46,13 @@ Weather/BOM data is awareness only. It can prompt **Review capability**; it cann
    npm run dev
    ```
 
-## Validation and Preview deployment
+Only these application variables are required in Vercel:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `OPENAI_API_KEY` (optional AI review only)
+
+## Validate and deploy
 
 ```powershell
 npm.cmd run typecheck
@@ -47,16 +61,12 @@ $env:NODE_OPTIONS='--use-system-ca'; npx.cmd vercel deploy --yes
 npx.cmd vercel alias set <deployment-url> emergency-mesh-preview-mysongees-projects.vercel.app
 ```
 
-Use the stable Preview link: `https://emergency-mesh-preview-mysongees-projects.vercel.app`.
+Stable protected Preview: `https://emergency-mesh-preview-mysongees-projects.vercel.app`.
 
-Do not deploy Production without explicit approval. Preview is deployment-protected; signed-in testing is required for the authenticated workspace.
+Production deployment:
 
-## Demo
+```powershell
+$env:NODE_OPTIONS='--use-system-ca'; npx.cmd vercel deploy --prod --yes
+```
 
-Use [DEMO_SCRIPT.md](DEMO_SCRIPT.md) for the walkthrough. The key message is: Emergency Mesh shows capability intelligence from source evidence and preserves human control; it does not control operations.
-
-## WebMCP
-
-Open the app in ChatGPT's in-app browser to expose its page-defined WebMCP tools. They provide deterministic, read-only capability evidence, planning-only simulations, dependency checks and donor-safe support comparisons. The optional server AI review is separate: it summarizes the same deterministic evidence via the server-only `OPENAI_API_KEY` and cannot mutate source systems or initiate operations.
-
-For the competition submission, use a working live URL that judges can access. If deployment protection remains enabled, provide valid test access instructions on the submission form.
+OSM is attributed in-app; for a commercial deployment, replace public OSM tiles with an appropriate commercial or self-hosted provider.

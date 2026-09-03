@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { assets, demoScenario, members, sourceLocations } from "@/data/demo";
 import { complianceEvidence, maintenanceEvidence, preparednessPlans, preparednessSignals, temporaryHostingRequests } from "@/data/preparedness";
 import { evaluateMainDemo, evaluateMainDemoWithAssets, evaluateMainDemoWithEvidence, findNeighbourSupport } from "@/domain/network";
-import type { Asset, Member } from "@/domain/types";
+import type { Asset, AssetType, Member } from "@/domain/types";
 import { demoWeatherSignal, type WeatherSignal } from "@/domain/weather";
 import { WebMcpBridge } from "@/webmcp/webmcp-bridge";
 
@@ -15,7 +15,54 @@ type PlanningStatus = "AVAILABLE" | "OFFLINE_UNTIL" | "MAINTENANCE_DUE" | "IN_US
 type PlanningChange = { assetId: string; status: PlanningStatus };
 type ScenarioSnapshot = { summary: string; changes: PlanningChange[] };
 type SourceRecord = { key: string; record: string; evidence: string; status: string };
+type LocalSourceRows = Record<string, Array<[string, string, string]>>;
+type AssetRecordStatus = "Available" | "Deployed" | "Offline" | "Maintenance";
 type IconName = "readiness" | "people" | "fleet" | "safety" | "scenario" | "overview" | "support" | "requests" | "ai" | "data" | "activity";
+const localRecordKey = "emergency-mesh:source-records";
+const localRecordLimits = [80, 120, 80] as const;
+function normaliseAssetRecordStatus(value: string): AssetRecordStatus {
+  if (/deploy|in[_ ]?use/i.test(value)) return "Deployed";
+  if (/maint|review|due/i.test(value)) return "Maintenance";
+  if (/offline|unavailable/i.test(value)) return "Offline";
+  return "Available";
+}
+function offlineUntilFromStatus(value: string): string {
+  return value.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? "";
+}
+function assetTypeFromRecord(value: string): AssetType {
+  const normalised = value.toUpperCase().trim().replaceAll(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const known = Object.keys(assetNames) as AssetType[];
+  if (known.includes(normalised as AssetType)) return normalised as AssetType;
+  const labelled = known.find((type) => assetNames[type].toUpperCase() === value.trim().toUpperCase());
+  return labelled ?? (normalised.includes("TRUCK") ? "STORM_TRUCK" : "GENERAL_PURPOSE_VEHICLE");
+}
+function applyLocalAssetRows(sourceAssets: Asset[], rows?: Array<[string, string, string]>): Asset[] {
+  if (!rows?.length) return sourceAssets;
+  const byName = new Map(sourceAssets.map((asset) => [asset.name.toLowerCase(), asset]));
+  return rows.map((row, index) => {
+    const existing = byName.get(row[0].toLowerCase());
+    const statusLabel = normaliseAssetRecordStatus(row[2]);
+    const status: Asset["status"] = statusLabel === "Deployed" ? "IN_USE" : statusLabel === "Offline" ? "OFFLINE_UNTIL" : statusLabel === "Maintenance" ? "MAINTENANCE_DUE" : "AVAILABLE";
+    return { ...(existing ?? { id: `LOCAL-${index + 1}`, unitId: "harbour" as const, name: row[0], type: assetTypeFromRecord(row[1]) }), status, offlineUntil: status === "OFFLINE_UNTIL" ? offlineUntilFromStatus(row[2]) || undefined : undefined, offlineReason: status === "OFFLINE_UNTIL" ? "Browser-local demonstration override." : existing?.offlineReason };
+  });
+}
+function readLocalSourceRows(): LocalSourceRows {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(localRecordKey) ?? "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result: LocalSourceRows = {};
+    for (const [source, rows] of Object.entries(parsed)) {
+      if (!Array.isArray(rows)) continue;
+      const safeRows: Array<[string, string, string]> = [];
+      for (const row of rows.slice(0, 150)) {
+        if (!Array.isArray(row) || row.length !== 3 || row.some((value) => typeof value !== "string")) continue;
+        safeRows.push(row.map((value, index) => value.trim().slice(0, localRecordLimits[index])) as [string, string, string]);
+      }
+      result[source] = safeRows;
+    }
+    return result;
+  } catch { return {}; }
+}
 const nav: Array<{ id: View; label: string; number: string; icon: IconName }> = [
   { id: "readiness", label: "Operational readiness", number: "01", icon: "readiness" }, { id: "evidence", label: "People & assets", number: "02", icon: "people" },
   { id: "preparedness", label: "Preparedness", number: "03", icon: "fleet" }, { id: "compliance", label: "Safety & compliance", number: "04", icon: "safety" },
@@ -48,7 +95,16 @@ function memberTone(member: Member): Tone { return memberState(member) === "Avai
 function assetState(asset: Asset) { return asset.status === "AVAILABLE" ? "Available" : asset.status === "IN_USE" ? "Deployed" : asset.status === "OFFLINE_UNTIL" ? "Unavailable" : "Review required"; }
 function assetTone(asset: Asset): Tone { return asset.status === "AVAILABLE" ? "ready" : asset.status === "IN_USE" ? "in-use" : "review"; }
 
-type LiveReadiness = { mode: "supabase"; result: ReturnType<typeof evaluateMainDemo>; members: Member[]; assets: Asset[]; summary: { onlineAssets: number; offlineAssets: number; maintenanceAssets: number; membersAvailable: number } };
+type LiveReadiness = { mode: "supabase" | "browser"; result: ReturnType<typeof evaluateMainDemo>; members: Member[]; assets: Asset[]; summary: { onlineAssets: number; offlineAssets: number; maintenanceAssets: number; membersAvailable: number } };
+function baseBrowserReadiness(): LiveReadiness {
+  const harbourAssets = assets.filter((asset) => asset.unitId === "harbour");
+  return { mode: "browser", result: evaluateMainDemo(), members: [...members], assets: [...assets], summary: { onlineAssets: harbourAssets.filter((asset) => asset.status === "AVAILABLE").length, offlineAssets: harbourAssets.filter((asset) => asset.status === "OFFLINE_UNTIL").length, maintenanceAssets: harbourAssets.filter((asset) => asset.status === "MAINTENANCE_DUE").length, membersAvailable: members.filter((member) => member.unitId === "harbour" && member.sourceStatus !== "OFFLINE" && member.sourceStatus !== "IN_USE").length } };
+}
+function withBrowserAssetOverrides(readiness: LiveReadiness): LiveReadiness {
+  const effectiveAssets = applyLocalAssetRows(readiness.assets, readLocalSourceRows()["asset-register"]);
+  const harbourAssets = effectiveAssets.filter((asset) => asset.unitId === "harbour");
+  return { ...readiness, assets: effectiveAssets, result: evaluateMainDemoWithEvidence({ members: readiness.members, assets: effectiveAssets }), summary: { ...readiness.summary, onlineAssets: harbourAssets.filter((asset) => asset.status === "AVAILABLE").length, offlineAssets: harbourAssets.filter((asset) => asset.status === "OFFLINE_UNTIL").length, maintenanceAssets: harbourAssets.filter((asset) => asset.status === "MAINTENANCE_DUE").length } };
+}
 
 function OperationalReadiness({ navigate, liveReadiness }: { navigate: (view: View, focus?: EvidenceFocus) => void; liveReadiness: LiveReadiness | null }) {
   const sourceMembers = liveReadiness?.members ?? members;
@@ -112,12 +168,20 @@ function OperationalReadiness({ navigate, liveReadiness }: { navigate: (view: Vi
 function EvidenceExplorer({ focus, liveReadiness }: { focus: EvidenceFocus; liveReadiness: LiveReadiness | null }) {
   const people = (liveReadiness?.members ?? members).filter((member) => member.unitId === "harbour");
   const fleet = (liveReadiness?.assets ?? assets).filter((asset) => asset.unitId === "harbour");
+  const [localAssetRows, setLocalAssetRows] = useState<Array<[string, string, string]> | null>(null);
   const [activeSection, setActiveSection] = useState<EvidenceFocus>(focus); const [search, setSearch] = useState(""); const [capability, setCapability] = useState("all"); const [personStatus, setPersonStatus] = useState("all"); const [assetType, setAssetType] = useState("all"); const [assetStatus, setAssetStatus] = useState("all");
   useEffect(() => setActiveSection(focus), [focus]);
-  const capabilities = [...new Set(people.flatMap((member) => member.competencies))].sort(); const types = [...new Set(fleet.map((asset) => asset.type))].sort();
+  useEffect(() => {
+    const refresh = () => setLocalAssetRows(readLocalSourceRows()["asset-register"] ?? null);
+    refresh();
+    window.addEventListener("emergency-mesh-local-records", refresh);
+    return () => window.removeEventListener("emergency-mesh-local-records", refresh);
+  }, []);
+  const assetRows = localAssetRows ?? fleet.map((asset) => [asset.name, assetNames[asset.type] ?? asset.type, assetState(asset)] as [string, string, string]);
+  const capabilities = [...new Set(people.flatMap((member) => member.competencies))].sort(); const types = [...new Set(assetRows.map((asset) => asset[1]))].sort();
   const visiblePeople = people.filter((member) => (!search || `${member.name} ${member.id}`.toLowerCase().includes(search.toLowerCase())) && (capability === "all" || member.competencies.includes(capability)) && (personStatus === "all" || memberState(member) === personStatus));
-  const visibleFleet = fleet.filter((asset) => (assetType === "all" || asset.type === assetType) && (assetStatus === "all" || assetState(asset) === assetStatus));
-  return <main className="em-page"><div className="em-page-heading"><div><p className="em-eyebrow">Harbour Station</p><h1>People & assets</h1><p className="em-subtitle">Search and filter member, fleet and equipment source records</p></div></div><div className="em-evidence-tabs" role="tablist" aria-label="People and asset records"><button role="tab" aria-selected={activeSection === "members"} className={activeSection === "members" ? "selected" : ""} onClick={() => setActiveSection("members")}>Members</button><button role="tab" aria-selected={activeSection === "assets"} className={activeSection === "assets" ? "selected" : ""} onClick={() => setActiveSection("assets")}>Fleet & equipment</button></div>{activeSection === "members" ? <section className="em-card"><SectionTitle title={`Members (${visiblePeople.length} of ${people.length})`} /><div className="em-controls"><label>Search<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name or ID" /></label><label>Capability<select value={capability} onChange={(event) => setCapability(event.target.value)}><option value="all">All capabilities</option>{capabilities.map((item) => <option value={item} key={item}>{capabilityNames[item] ?? item}</option>)}</select></label><label>Status<select value={personStatus} onChange={(event) => setPersonStatus(event.target.value)}><option value="all">All statuses</option>{["Available", "In use", "Unavailable", "Currency review", "Currency lapsed"].map((item) => <option key={item}>{item}</option>)}</select></label></div><div className="em-data-list">{visiblePeople.map((member) => <article key={member.id}><div><strong>{member.name}</strong><small>{member.id} · {member.competencies.map((item) => capabilityNames[item] ?? item).join(" · ")}</small></div><small>Declared: {member.availableFrom.slice(11, 16)}–{member.availableUntil.slice(11, 16)} UTC · {member.trainingSummary ?? "Current source record"} · {member.experienceYears ?? 0} years evidence</small><Badge tone={memberTone(member)}>{memberState(member)}</Badge></article>)}</div></section> : <section className="em-card"><SectionTitle title={`Fleet & equipment (${visibleFleet.length} of ${fleet.length})`} /><div className="em-controls"><label>Asset type<select value={assetType} onChange={(event) => setAssetType(event.target.value)}><option value="all">All asset types</option>{types.map((item) => <option value={item} key={item}>{assetNames[item] ?? item}</option>)}</select></label><label>Status<select value={assetStatus} onChange={(event) => setAssetStatus(event.target.value)}><option value="all">All statuses</option>{["Available", "Deployed", "Unavailable", "Review required"].map((item) => <option key={item}>{item}</option>)}</select></label></div><div className="em-data-list">{visibleFleet.map((asset) => <article key={asset.id}><div><strong>{asset.name}</strong><small>{assetNames[asset.type] ?? asset.type} · {asset.capacity ?? "No capacity record supplied"}</small></div><small>{asset.offlineUntil ? `Source review through ${asset.offlineUntil.slice(0, 10)}` : asset.remainingUsageHours ? `${asset.remainingUsageHours} hours to service horizon` : asset.sourceCondition === "REVIEW_REQUIRED" ? "Source condition requires review" : "Source status current"}</small><Badge tone={assetTone(asset)}>{assetState(asset)}</Badge></article>)}</div></section>}</main>;
+  const visibleFleet = assetRows.filter((asset) => (assetType === "all" || asset[1] === assetType) && (assetStatus === "all" || asset[2] === assetStatus));
+  return <main className="em-page"><div className="em-page-heading"><div><p className="em-eyebrow">Harbour Station</p><h1>People & assets</h1><p className="em-subtitle">Search and filter member, fleet and equipment source records</p></div></div><div className="em-evidence-tabs" role="tablist" aria-label="People and asset records"><button role="tab" aria-selected={activeSection === "members"} className={activeSection === "members" ? "selected" : ""} onClick={() => setActiveSection("members")}>Members</button><button role="tab" aria-selected={activeSection === "assets"} className={activeSection === "assets" ? "selected" : ""} onClick={() => setActiveSection("assets")}>Fleet & equipment</button></div>{activeSection === "members" ? <section className="em-card"><SectionTitle title={`Members (${visiblePeople.length} of ${people.length})`} /><div className="em-controls"><label>Search<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name or ID" /></label><label>Capability<select value={capability} onChange={(event) => setCapability(event.target.value)}><option value="all">All capabilities</option>{capabilities.map((item) => <option value={item} key={item}>{capabilityNames[item] ?? item}</option>)}</select></label><label>Status<select value={personStatus} onChange={(event) => setPersonStatus(event.target.value)}><option value="all">All statuses</option>{["Available", "In use", "Unavailable", "Currency review", "Currency lapsed"].map((item) => <option key={item}>{item}</option>)}</select></label></div><div className="em-data-list">{visiblePeople.map((member) => <article key={member.id}><div><strong>{member.name}</strong><small>{member.id} · {member.competencies.map((item) => capabilityNames[item] ?? item).join(" · ")}</small></div><small>Declared: {member.availableFrom.slice(11, 16)}–{member.availableUntil.slice(11, 16)} UTC · {member.trainingSummary ?? "Current source record"} · {member.experienceYears ?? 0} years evidence</small><Badge tone={memberTone(member)}>{memberState(member)}</Badge></article>)}</div></section> : <section className="em-card"><SectionTitle title={`Fleet & equipment (${visibleFleet.length} of ${assetRows.length})`} /><div className="em-controls"><label>Asset type<select value={assetType} onChange={(event) => setAssetType(event.target.value)}><option value="all">All asset types</option>{types.map((item) => <option value={item} key={item}>{item}</option>)}</select></label><label>Status<select value={assetStatus} onChange={(event) => setAssetStatus(event.target.value)}><option value="all">All statuses</option>{["Available", "Deployed", "Unavailable", "Review required"].map((item) => <option key={item}>{item}</option>)}</select></label></div><div className="em-data-list">{visibleFleet.map((asset, index) => { const status = asset[2]; const tone: Tone = /offline|unavailable/i.test(status) ? "gap" : /review|due/i.test(status) ? "review" : /deployed|in use/i.test(status) ? "in-use" : "ready"; return <article key={`${asset[0]}-${index}`}><div><strong>{asset[0]}</strong><small>{asset[1]} · Browser-local source view</small></div><small>Editable demonstration record; operational calculations remain unchanged.</small><Badge tone={tone}>{status}</Badge></article>; })}</div></section>}</main>;
 }
 
 function Scenarios({ navigate, onComplete, liveReadiness }: { navigate: (view: View) => void; onComplete: (snapshot: ScenarioSnapshot) => void; liveReadiness: LiveReadiness | null }) {
@@ -369,7 +433,7 @@ function OperationalOverview({ weather, loading, onReplay, navigate, scenario, o
   const sourceAssets = liveReadiness?.assets ?? assets;
   const sourceMembers = liveReadiness?.members ?? members;
   const planningAssets = useMemo(() => sourceAssets.map((asset) => ({ ...asset, status: changeByAsset.get(asset.id) ?? asset.status, offlineUntil: changeByAsset.get(asset.id) === "OFFLINE_UNTIL" ? "2026-09-05T00:00:00Z" : asset.offlineUntil })), [sourceAssets, scenario]);
-  const fixtureResult = useMemo(() => scenario ? liveReadiness ? evaluateMainDemoWithEvidence({ members: sourceMembers, assets: planningAssets }) : evaluateMainDemoWithAssets(planningAssets) : evaluateMainDemo(), [liveReadiness, planningAssets, scenario, sourceMembers]);
+  const fixtureResult = useMemo(() => scenario ? liveReadiness ? evaluateMainDemoWithEvidence({ members: sourceMembers, assets: planningAssets }) : evaluateMainDemoWithAssets(planningAssets) : liveReadiness?.result ?? evaluateMainDemo(), [liveReadiness, planningAssets, scenario, sourceMembers]);
   const result = scenario ? fixtureResult : liveReadiness?.result ?? fixtureResult;
   const offlineAssets = planningAssets.filter((asset) => asset.unitId === "harbour" && asset.status === "OFFLINE_UNTIL");
   const maintenanceAssets = planningAssets.filter((asset) => asset.unitId === "harbour" && asset.status === "MAINTENANCE_DUE");
@@ -386,8 +450,8 @@ function OperationalOverview({ weather, loading, onReplay, navigate, scenario, o
   return <main className="em-page"><div className="em-page-heading"><div><p className="em-eyebrow">Harbour Station</p><h1>Operational overview</h1><p className="em-subtitle">{scenario ? "Planning snapshot — only the selected scenario changes are being assessed." : "Live overview from current source evidence."}</p></div>{scenario ? <button className="em-secondary" onClick={onResetScenario}>Reset to live overview</button> : <Badge tone="ready">Live overview</Badge>}</div>{scenario && <section className="em-scenario-banner"><Icon name="scenario" /><div><strong>Scenario being assessed</strong><span>{scenario.summary}</span></div><Badge tone="neutral">Planning only</Badge></section>}<WeatherStatus weather={weather} loading={loading} onReplay={onReplay} /><div className="em-workspace"><div><section className="em-assessment-visual"><div><Icon name="scenario" /><span>Planning period</span><strong>{horizon} hours</strong></div><div><Icon name="people" /><span>Members</span><strong>{profile.members} / {harbourMembers.length} declared</strong></div><div><Icon name="fleet" /><span>Fleet forecast</span><strong>{profile.fleet} / {harbourAssets.length} online</strong></div><div><Icon name="data" /><span>Asset changes</span><strong>{scenario?.changes.length ?? 0}</strong></div></section><section className="em-card"><SectionTitle title="Capability outcome" info="All eight measures combine relevant members, vehicles, equipment and source evidence." /><div className="em-result-grid">{requirements.map((name) => { const specificGap = name === "Specialist truck" && hasSpecialistGap; const review = !specificGap && (name === "Flood boat" && maintenanceAssets.some((asset) => asset.type === "FLOOD_BOAT") || name === "Qualified boat operator"); return <article key={name} className={specificGap ? "gap" : review ? "review" : "ready"}><span>{specificGap ? "!" : review ? "~" : "✓"}</span><div><strong>{name}</strong><small>{specificGap ? `${offlineAssets[0]?.name ?? "Required vehicle"} offline${offlineAssets[0]?.offlineUntil ? ` · expected return ${new Intl.DateTimeFormat("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(offlineAssets[0].offlineUntil))}` : ""}` : review ? "Maintenance or currency review required" : "Members and required assets online"}</small></div><Badge tone={specificGap ? "gap" : review ? "review" : "ready"}>{specificGap ? "Offline" : review ? "Review" : "Online"}</Badge></article>; })}</div></section><section className="em-card"><SectionTitle title="Availability horizon" info="Declared member availability and expected asset return times across the selected planning period; this is not a roster." /><div className="em-horizon-control" role="group" aria-label="Select planning horizon">{([12, 24, 36, 48, 72] as const).map((hours) => <button key={hours} className={horizon === hours ? "selected" : ""} onClick={() => setHorizon(hours)}>{hours} hrs</button>)}</div><div className="em-availability-chart" role="img" aria-label={`${profile.members} members and ${profile.fleet} assets available over ${horizon} hours`}><div><span>Declared members</span><strong>{profile.members}</strong><i><b style={{ width: `${harbourMembers.length ? profile.members / harbourMembers.length * 100 : 0}%` }} /></i></div><div><span>Fleet forecast</span><strong>{profile.fleet}</strong><i><b style={{ width: `${harbourAssets.length ? profile.fleet / harbourAssets.length * 100 : 0}%` }} /></i></div><div><span>Assets under review</span><strong>{profile.attention}</strong><i><b className="gap" style={{ width: `${Math.max(4, harbourAssets.length ? profile.attention / harbourAssets.length * 100 : 0)}%` }} /></i></div></div></section>{offlineAssets.length > 0 && <section className="em-offline-detail"><Icon name="fleet" /><div><span>Current asset issues · {offlineAssets.length} offline</span><strong>Source review and planned return</strong><div className="em-offline-issues">{offlineAssets.map((asset) => <article key={asset.id}><strong>{asset.name}</strong><small>Offline from {formatEvidenceDate(asset.offlineSince)} · Planned return {formatEvidenceDate(asset.offlineUntil)}</small><p>{asset.offlineReason ?? "Source status is offline; a current clearance check is required before reliance."}</p><button className="em-link" onClick={() => onInspectAsset(asset.id)}>View asset →</button></article>)}</div></div></section>}</div><aside><MapPanel weather={weather} sourceAssets={planningAssets} onInspect={onInspectAsset} /></aside></div></main>;
 }
 
-function LocalSupport({ agentDraftResource }: { agentDraftResource: string | null }) {
-  const options = findNeighbourSupport();
+function LocalSupport({ agentDraftResource, sourceAssets = assets }: { agentDraftResource: string | null; sourceAssets?: Asset[] }) {
+  const options = findNeighbourSupport(sourceAssets);
   const activeRequests = temporaryHostingRequests.filter((request) => request.status === "REVIEWING");
   const outgoing = temporaryHostingRequests.filter((request) => request.direction === "OUTGOING");
   const incoming = temporaryHostingRequests.filter((request) => request.direction === "INCOMING");
@@ -419,21 +483,29 @@ function Sources({ weatherEnabled, setWeatherEnabled, onReplay }: { weatherEnabl
   const [sourceKeys, setSourceKeys] = useState<Record<string, string[]>>({});
   const [loadedSources, setLoadedSources] = useState<Record<string, boolean>>({});
   const [liveSourceCount, setLiveSourceCount] = useState(0);
-  const [sourceAudit, setSourceAudit] = useState<Record<string, { count: number; lastAmendedAt: string | null; lastAmendedBy: string | null }>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ source: string; index: number; key?: string; isAdded?: boolean; row: [string, string, string] } | null>(null);
+  const [editing, setEditing] = useState<{ source: string; index: number; key?: string; isAdded?: boolean; offlineUntil?: string; row: [string, string, string] } | null>(null);
   const Toggle = ({ checked, onClick, label }: { checked: boolean; onClick: () => void; label: string }) => <button type="button" className="em-switch" role="switch" aria-checked={checked} aria-label={`${label}: ${checked ? "enabled" : "disabled"}`} onClick={onClick}><span /></button>;
-  const saveRecord = async () => {
+  const saveRecord = () => {
     if (!editing) return;
-    const response = await fetch("/api/data/source-records", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: editing.source, key: editing.key, record: editing.row[0], evidence: editing.row[1], status: editing.row[2], isAdded: editing.isAdded }) });
-    const payload = await response.json() as { key?: string; error?: string };
-    if (!response.ok || !payload.key) { setSaveError(payload.error ?? "Unable to save this correction."); return; }
-    const savedKey = payload.key;
-    setRecords((current) => ({ ...current, [editing.source]: editing.isAdded ? [editing.row, ...current[editing.source]] : current[editing.source].map((row, index) => index === editing.index ? editing.row : row) }));
-    setSupabaseRecords((current) => ({ ...current, [editing.source]: editing.isAdded ? [editing.row, ...(current[editing.source] ?? [])] : (current[editing.source] ?? []).map((row, index) => index === editing.index ? editing.row : row) }));
-    setSourceKeys((current) => ({ ...current, [editing.source]: editing.isAdded ? [savedKey, ...(current[editing.source] ?? [])] : current[editing.source] ?? [] }));
+    const safeRow = editing.row.map((value, index) => value.trim().slice(0, localRecordLimits[index])) as [string, string, string];
+    if (editing.source === "asset-register") {
+      const status = normaliseAssetRecordStatus(safeRow[2]);
+      const visibleDate = document.querySelector<HTMLInputElement>(".em-amend-modal input[type='date']")?.value ?? "";
+      const offlineUntil = visibleDate || editing.offlineUntil || offlineUntilFromStatus(safeRow[2]);
+      safeRow[2] = status === "Offline" && /^\d{4}-\d{2}-\d{2}$/.test(offlineUntil) ? `Offline until ${offlineUntil}` : status;
+    }
+    if (safeRow.some((value) => !value)) { setSaveError("Complete all three fields before saving."); return; }
+    const activeRows = supabaseRecords[editing.source] ?? records[editing.source] ?? [];
+    const nextRows = (editing.isAdded ? [safeRow, ...activeRows] : activeRows.map((row, index) => index === editing.index ? safeRow : row)).slice(0, 150);
+    const stored = readLocalSourceRows();
+    try { window.localStorage.setItem(localRecordKey, JSON.stringify({ ...stored, [editing.source]: nextRows })); }
+    catch { setSaveError("This browser could not store another demo change."); return; }
+    setRecords((current) => ({ ...current, [editing.source]: nextRows }));
+    setSupabaseRecords((current) => ({ ...current, [editing.source]: nextRows }));
+    if (editing.isAdded) setSourceKeys((current) => ({ ...current, [editing.source]: [`local-${Date.now()}`, ...(current[editing.source] ?? [])] }));
+    window.dispatchEvent(new CustomEvent("emergency-mesh-local-records"));
     setSaveError(null);
-    setSourceAudit((current) => ({ ...current, [editing.source]: { count: (current[editing.source]?.count ?? 0) + 1, lastAmendedAt: new Date().toISOString(), lastAmendedBy: "Signed-in reviewer" } }));
     setEditing(null);
   };
   const loadSource = (source: string) => {
@@ -446,7 +518,6 @@ function Sources({ weatherEnabled, setWeatherEnabled, onReplay }: { weatherEnabl
         const mapped = payload.records.map((record) => [String(record.record ?? "—"), String(record.evidence ?? "—"), String(record.status ?? "—")] as [string, string, string]);
         setSupabaseRecords((current) => ({ ...current, [source]: mapped }));
         setSourceKeys((current) => ({ ...current, [source]: payload.records!.map((record) => String(record.key ?? "")) }));
-        if (payload.corrections) setSourceAudit((current) => ({ ...current, [source]: payload.corrections! }));
       })
       .catch(() => undefined);
   };
@@ -461,9 +532,10 @@ function Sources({ weatherEnabled, setWeatherEnabled, onReplay }: { weatherEnabl
       } catch { return null; }
     })).then((results) => {
       if (!active) return;
+      const stored = readLocalSourceRows();
       const live: Record<string, Array<[string, string, string]>> = {};
       const keys: Record<string, string[]> = {};
-      results.forEach((result) => { if (result) { live[result[0]] = result[1].map((item) => item.row); keys[result[0]] = result[1].map((item) => item.key); } });
+      results.forEach((result) => { if (result) { live[result[0]] = stored[result[0]] ?? result[1].map((item) => item.row); keys[result[0]] = result[1].map((item) => item.key); } });
       setLiveSourceCount(Object.keys(live).length);
       setSupabaseRecords(live);
       setSourceKeys(keys);
@@ -472,7 +544,7 @@ function Sources({ weatherEnabled, setWeatherEnabled, onReplay }: { weatherEnabl
     return () => { active = false; };
   }, []);
   const beginSetup = () => { setSetupState("loading"); window.setTimeout(() => setSetupState("ready"), 700); };
-  return <main className="em-page narrow"><div className="em-page-heading"><div><p className="em-eyebrow">Configuration</p><h1>Data & settings</h1><p className="em-subtitle">Source connections and editable demonstration records</p></div></div><section className={`em-callout ${liveSourceCount ? "ready" : "neutral"}`}><Icon name="data" /><div><strong>{liveSourceCount ? "Supabase source data connected" : "Checking source connection"}</strong><p>{liveSourceCount ? `${liveSourceCount} source tables loaded from the Emergency Mesh database.` : "Loading source records from the configured database."}</p></div><Badge tone={liveSourceCount ? "ready" : "neutral"}>{liveSourceCount ? "Live" : "Checking"}</Badge></section><section className="em-card"><SectionTitle title="Connected systems" action={<button className="em-secondary" onClick={beginSetup}>{setupState === "loading" ? "Setting up…" : setupState === "ready" ? "Connection ready" : "Set up connection"}</button>} /><div className="em-feed-list"><article><div><strong>BOM weather awareness</strong><small>Checks the warning feed when Operational overview opens.</small></div><Toggle checked={weatherEnabled} onClick={() => setWeatherEnabled(!weatherEnabled)} label="BOM weather awareness" /></article>{feeds.map(([id, name, description]) => <article key={id}><div><strong>{name}</strong><small>{description}</small></div><Toggle checked={enabled[id]} onClick={() => setEnabled((current) => ({ ...current, [id]: !current[id] }))} label={name} /></article>)}<article><div><strong>Weather replay</strong><small>Restores the known demonstration scenario.</small></div><button className="em-secondary" onClick={onReplay}>Load replay</button></article></div></section><section className="em-card em-data-section"><SectionTitle title="Source data" info="Open a source to add or amend a persisted correction. It does not alter an upstream operational system." />{feeds.map(([id, name, description]) => { const activeRows = supabaseRecords[id] ?? records[id]; return <details className="em-source-accordion" key={id} onToggle={(event) => { if ((event.currentTarget as HTMLDetailsElement).open) loadSource(id); }}><summary><Icon name={id === "membership" || id === "availability" || id === "training" ? "people" : id === "safety" ? "safety" : "fleet"} /><div><strong>{name}</strong><small>{description}</small></div><span>{activeRows.length} records{supabaseRecords[id] ? " · live" : ""}</span></summary><div className="em-source-table" role="table" aria-label={`${name} records`}><div role="row"><strong>Record</strong><strong>Evidence</strong><strong>Status / due</strong><span /></div>{activeRows.map((row, index) => <div role="row" key={`${id}-${index}-${row.join("-")}`}><span>{row[0]}</span><span>{row[1]}</span><span>{row[2]}</span><button className="em-link" onClick={() => setEditing({ source: id, index, key: sourceKeys[id]?.[index], row: [...row] as [string, string, string] })}>Amend</button></div>)}</div><button className="em-secondary em-add-record" onClick={() => setEditing({ source: id, index: -1, isAdded: true, row: ["", "", ""] })}>Add record</button></details>; })}</section>{editing && <div className="em-modal-backdrop" role="presentation"><section className="em-modal em-amend-modal" role="dialog" aria-modal="true" aria-labelledby="amend-title"><h2 id="amend-title">{editing.isAdded ? "Add source record" : "Amend source record"}</h2><label>Record<input value={editing.row[0]} onChange={(event) => setEditing({ ...editing, row: [event.target.value, editing.row[1], editing.row[2]] })} /></label><label>Evidence<input value={editing.row[1]} onChange={(event) => setEditing({ ...editing, row: [editing.row[0], event.target.value, editing.row[2]] })} /></label><label>Status or due<input value={editing.row[2]} onChange={(event) => setEditing({ ...editing, row: [editing.row[0], editing.row[1], event.target.value] })} /></label><p>Saves a persistent correction to this fictional source feed.</p><div><button className="em-secondary" onClick={() => setEditing(null)}>Cancel</button><button className="em-primary" onClick={() => void saveRecord()}>Save change</button></div></section></div>}</main>;
+  return <main className="em-page narrow"><div className="em-page-heading"><div><p className="em-eyebrow">Configuration</p><h1>Data & settings</h1><p className="em-subtitle">Source connections and editable demonstration records</p></div></div><section className={`em-callout ${liveSourceCount ? "ready" : "neutral"}`}><Icon name="data" /><div><strong>{liveSourceCount ? "Supabase source data connected" : "Checking source connection"}</strong><p>{liveSourceCount ? `${liveSourceCount} source tables loaded from the Emergency Mesh database.` : "Loading source records from the configured database."}</p></div><Badge tone={liveSourceCount ? "ready" : "neutral"}>{liveSourceCount ? "Live" : "Checking"}</Badge></section><section className="em-card"><SectionTitle title="Connected systems" action={<button className="em-secondary" onClick={beginSetup}>{setupState === "loading" ? "Setting up…" : setupState === "ready" ? "Connection ready" : "Set up connection"}</button>} /><div className="em-feed-list"><article><div><strong>BOM weather awareness</strong><small>Checks the warning feed when Operational overview opens.</small></div><Toggle checked={weatherEnabled} onClick={() => setWeatherEnabled(!weatherEnabled)} label="BOM weather awareness" /></article>{feeds.map(([id, name, description]) => <article key={id}><div><strong>{name}</strong><small>{description}</small></div><Toggle checked={enabled[id]} onClick={() => setEnabled((current) => ({ ...current, [id]: !current[id] }))} label={name} /></article>)}<article><div><strong>Weather replay</strong><small>Restores the known demonstration scenario.</small></div><button className="em-secondary" onClick={onReplay}>Load replay</button></article></div></section><section className="em-card em-data-section"><SectionTitle title="Source data" info="Open a source to add or amend a browser-local demo record. It does not alter Supabase or an upstream operational system." />{feeds.map(([id, name, description]) => { const activeRows = supabaseRecords[id] ?? records[id]; return <details className="em-source-accordion" key={id} onToggle={(event) => { if ((event.currentTarget as HTMLDetailsElement).open) loadSource(id); }}><summary><Icon name={id === "membership" || id === "availability" || id === "training" ? "people" : id === "safety" ? "safety" : "fleet"} /><div><strong>{name}</strong><small>{description}</small></div><span>{activeRows.length} records{supabaseRecords[id] ? " · live" : ""}</span></summary><div className="em-source-table" role="table" aria-label={`${name} records`}><div role="row"><strong>Record</strong><strong>Evidence</strong><strong>Status / due</strong><span /></div>{activeRows.map((row, index) => <div role="row" key={`${id}-${index}-${row.join("-")}`}><span>{row[0]}</span><span>{row[1]}</span><span>{row[2]}</span><button className="em-link" onClick={() => { setSaveError(null); setEditing({ source: id, index, key: sourceKeys[id]?.[index], offlineUntil: id === "asset-register" ? offlineUntilFromStatus(row[2]) : undefined, row: id === "asset-register" ? [row[0], row[1], normaliseAssetRecordStatus(row[2])] : [...row] as [string, string, string] }); }}>Amend</button></div>)}</div><button className="em-secondary em-add-record" onClick={() => { setSaveError(null); setEditing({ source: id, index: -1, isAdded: true, row: ["", "", id === "asset-register" ? "Available" : ""] }); }}>Add record</button></details>; })}</section>{editing && <div className="em-modal-backdrop" role="presentation"><section className="em-modal em-amend-modal" role="dialog" aria-modal="true" aria-labelledby="amend-title"><h2 id="amend-title">{editing.isAdded ? "Add source record" : "Amend source record"}</h2><label>Record<input required maxLength={localRecordLimits[0]} value={editing.row[0]} onChange={(event) => setEditing({ ...editing, row: [event.target.value, editing.row[1], editing.row[2]] })} /></label><label>Evidence<input required maxLength={localRecordLimits[1]} value={editing.row[1]} onChange={(event) => setEditing({ ...editing, row: [editing.row[0], event.target.value, editing.row[2]] })} /></label>{editing.source === "asset-register" ? <><label>Status<select value={normaliseAssetRecordStatus(editing.row[2])} onChange={(event) => setEditing({ ...editing, offlineUntil: event.target.value === "Offline" ? editing.offlineUntil : "", row: [editing.row[0], editing.row[1], event.target.value] })}>{(["Available", "Deployed", "Offline", "Maintenance"] as AssetRecordStatus[]).map((status) => <option key={status} value={status}>{status}</option>)}</select></label>{normaliseAssetRecordStatus(editing.row[2]) === "Offline" && <label>Offline until (optional)<input type="date" value={editing.offlineUntil ?? ""} onChange={(event) => setEditing({ ...editing, offlineUntil: event.target.value })} /></label>}</> : <label>Status or due<input required maxLength={localRecordLimits[2]} value={editing.row[2]} onChange={(event) => setEditing({ ...editing, row: [editing.row[0], editing.row[1], event.target.value] })} /></label>}{saveError && <p role="alert">{saveError}</p>}<p>Saves only in this browser for a safe, isolated demonstration.</p><div><button className="em-secondary" onClick={() => setEditing(null)}>Cancel</button><button className="em-primary" onClick={saveRecord}>Save change</button></div></section></div>}</main>;
 }
 function Activity() {
   const [events, setEvents] = useState<Array<{ source_id: string; record_key: string; action: string; previous_value: { record?: string; evidence?: string; status?: string } | null; next_value: { record?: string; evidence?: string; status?: string }; actor_label: string | null; occurred_at: string }>>([]);
@@ -496,10 +568,15 @@ export function StationReadinessApp() {
     void fetch("/api/data/readiness")
       .then((response) => response.json())
       .then((payload: LiveReadiness | { mode?: string }) => {
-        if (active && payload.mode === "supabase") setLiveReadiness(payload as LiveReadiness);
+        if (active) setLiveReadiness(withBrowserAssetOverrides(payload.mode === "supabase" ? payload as LiveReadiness : baseBrowserReadiness()));
       })
-      .catch(() => undefined);
+      .catch(() => { if (active) setLiveReadiness(withBrowserAssetOverrides(baseBrowserReadiness())); });
     return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    const refresh = () => setLiveReadiness((current) => withBrowserAssetOverrides(current ?? baseBrowserReadiness()));
+    window.addEventListener("emergency-mesh-local-records", refresh);
+    return () => window.removeEventListener("emergency-mesh-local-records", refresh);
   }, []);
   const navigate = (next: View, focus?: EvidenceFocus) => {
     setHistory((current) => [...current, { view, focus: evidenceFocus, assetId: selectedAssetId }]);
@@ -532,6 +609,7 @@ export function StationReadinessApp() {
   const persistScenario = (snapshot: ScenarioSnapshot) => { setScenario(snapshot); void fetch("/api/scenarios", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snapshot) }); };
   const previousView = history.at(-1)?.view;
   const previousLabel = previousView ? nav.find((item) => item.id === previousView)?.label ?? "previous view" : "previous view";
-  const screens: Record<View, React.ReactNode> = { readiness: <OperationalReadiness navigate={navigate} liveReadiness={liveReadiness} />, evidence: <EvidenceExplorer focus={evidenceFocus} liveReadiness={liveReadiness} />, scenarios: <Scenarios navigate={navigate} onComplete={persistScenario} liveReadiness={liveReadiness} />, preparedness: <Preparedness liveReadiness={liveReadiness} />, compliance: <SafetyCompliance />, overview: <OperationalOverview weather={weather} loading={loading} onReplay={() => setWeather(demoWeatherSignal)} navigate={navigate} scenario={scenario} onResetScenario={() => setScenario(null)} onInspectAsset={inspectAsset} liveReadiness={liveReadiness} />, asset: <AssetDetail assetId={selectedAssetId} onBack={goBack} sourceAssets={liveReadiness?.assets ?? assets} />, support: <LocalSupport agentDraftResource={agentDraftResource} />, agent: <Agent />, sources: <Sources weatherEnabled={weatherEnabled} setWeatherEnabled={setWeatherEnabled} onReplay={() => setWeather(demoWeatherSignal)} />, activity: <Activity /> };
-  return <div className="em-shell"><WebMcpBridge showStatus={false} /><aside className="em-sidebar"><button className="em-brand" onClick={() => selectPrimaryView("readiness")}><span>EM</span><strong>Emergency<br />Mesh</strong></button><nav aria-label="Primary navigation">{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => selectPrimaryView(item.id)}><span className="em-nav-icon"><Icon name={item.icon} /></span><span className="em-nav-label">{item.label}</span></button>)}</nav><p className="em-sidebar-note">Capability intelligence<br />Not operational control</p></aside><div className="em-content">{history.length > 0 && view !== "asset" && <button className="em-app-back" onClick={goBack} aria-label={`Back to ${previousLabel}`}>← Back to {previousLabel}</button>}{screens[view]}</div></div>;
+  const effectiveAssets = liveReadiness?.assets ?? assets;
+  const screens: Record<View, React.ReactNode> = { readiness: <OperationalReadiness navigate={navigate} liveReadiness={liveReadiness} />, evidence: <EvidenceExplorer focus={evidenceFocus} liveReadiness={liveReadiness} />, scenarios: <Scenarios navigate={navigate} onComplete={persistScenario} liveReadiness={liveReadiness} />, preparedness: <Preparedness liveReadiness={liveReadiness} />, compliance: <SafetyCompliance />, overview: <OperationalOverview weather={weather} loading={loading} onReplay={() => setWeather(demoWeatherSignal)} navigate={navigate} scenario={scenario} onResetScenario={() => setScenario(null)} onInspectAsset={inspectAsset} liveReadiness={liveReadiness} />, asset: <AssetDetail assetId={selectedAssetId} onBack={goBack} sourceAssets={effectiveAssets} />, support: <LocalSupport agentDraftResource={agentDraftResource} sourceAssets={effectiveAssets} />, agent: <Agent />, sources: <Sources weatherEnabled={weatherEnabled} setWeatherEnabled={setWeatherEnabled} onReplay={() => setWeather(demoWeatherSignal)} />, activity: <Activity /> };
+  return <div className="em-shell"><WebMcpBridge showStatus={false} sourceAssets={effectiveAssets} /><aside className="em-sidebar"><button className="em-brand" onClick={() => selectPrimaryView("readiness")}><span>EM</span><strong>Emergency<br />Mesh</strong></button><nav aria-label="Primary navigation">{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => selectPrimaryView(item.id)}><span className="em-nav-icon"><Icon name={item.icon} /></span><span className="em-nav-label">{item.label}</span></button>)}</nav><p className="em-sidebar-note">Capability intelligence<br />Not operational control</p></aside><div className="em-content">{history.length > 0 && view !== "asset" && <button className="em-app-back" onClick={goBack} aria-label={`Back to ${previousLabel}`}>← Back to {previousLabel}</button>}{screens[view]}</div></div>;
 }

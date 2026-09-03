@@ -2,108 +2,55 @@
 
 ## Purpose
 
-Emergency Mesh is an agent-native capability-intelligence and readiness layer. It connects structured signals from existing systems to show current readiness, test a proposed operating condition, identify gaps, and prepare human-approved support options.
+Emergency Mesh is a fictional capability-intelligence and readiness layer. It combines structured evidence from existing systems to show readiness, test a proposed operating condition, identify a Station gap and prepare a human-reviewed support-request draft.
 
-It is not an operational management system, incident-management system, or computer-aided dispatch system.
-
-## Value proposition
-
-The source systems can each answer a narrow question: who is trained, which qualifications are current, what assets exist, what is under maintenance, or what an incident requires. Emergency Mesh combines those changing signals to answer the cross-system question:
-
-> Given this requirement and period, what capability can be offered and sustained, what is at risk, and what is the smallest human-approved resolution?
-
-Training, qualification/currency, asset, availability, maintenance, historical incident and operational-response systems remain the source of truth. Emergency Mesh does not replace their workflows.
+It is not an operational-management, incident-management or computer-aided dispatch system.
 
 ## System boundary
 
 ```text
-Operational response / incident-management system
-  → incident capability requirement, priority, timing, broad context
-
-Availability, qualification, asset, maintenance, loan and historical-incident systems
-  → current resource state, changes, provenance and currency
-
-Weather warning sources
-  → external awareness signal and review prompt only
-
-Emergency Mesh
-  → deterministic capability feasibility, gaps, impact, donor-safe options,
-    historical reference prompts and draft support requests
-
-Authorised human
-  → approves or declines support offers/requests
-
-Operational response / incident-management system
-  → dispatch, tasking, deployment, incident action and live field control
+Operational / incident systems → capability requirement and broad context
+Availability, currency, asset, maintenance, safety and history systems → source evidence
+Weather sources → awareness signal and review prompt only
+Emergency Mesh → deterministic feasibility, constraints, evidence and draft support options
+Authorised human → decides whether to approve or act
+Operational / incident systems → dispatch, tasking, deployment and field control
 ```
 
-## Emergency Mesh must do
+Source systems remain authoritative. The public competition build does not write corrections to Supabase: fictional demonstration amendments are validated and stored only in the current browser. They may influence the browser's readiness and planning calculations, but never administer upstream people, training, asset or maintenance systems.
 
-- ingest or simulate configurable data from other systems
-- consume weather warnings as an attributed external awareness source that can prompt a capability review
-- consume training/currency status as evidence, without becoming an LMS or training register
-- normalise changing resource, asset, availability and maintenance signals
-- assess source-system maintenance, inspection, registration and service-horizon evidence for its capability impact, without becoming the maintenance system
-- translate an incoming operational requirement into capability demands
-- calculate sustainable capability and binding constraints
-- expose source, freshness, assumptions and data currency
-- identify the smallest safe capability resolution
-- identify resilience and training-currency gaps when they affect a requested capability
-- evaluate neighbour support without breaching donor readiness
-- surface relevant, time-qualified prior-incident lessons as advisory prompts
-- prepare drafts and preserve human approval for consequential actions
-- prepare a time-bounded, supplying-station-owned temporary support request for a vehicle, equipment item or capability bundle; retain supplying-station ownership and never direct movement or use
-- expose these specialist operations through WebMCP tools
-- allow a server-side agent to select from an explicitly allow-listed set of deterministic analysis tools, while exposing the tool trace and result to a human
+## Emergency Mesh does
 
-## Emergency Mesh must not do
+- normalise or simulate availability, currency, asset, maintenance, safety and operational evidence
+- calculate sustainable capability, binding constraints, availability horizons and donor-safe support options
+- show source, freshness, assumptions and time-qualified historical reference prompts
+- consume weather as an attributed prompt to **Review capability** only
+- assess Harbour first, then reveal aggregate local support only after a Station gap
+- prepare a time-bounded support-request draft while preserving supplying-station ownership/minimum readiness
+- expose deterministic evidence and planning assistance through genuine WebMCP tools
+- apply clearly bounded browser-local demonstration overrides consistently across relevant views and WebMCP calculations
 
-- dispatch, task or deploy personnel
-- automatically initiate operational activity, activate volunteers, dispatch resources, or create incident tasks from a weather warning
-- assign operators or vehicles to an active incident
-- issue tactical directions, routes or site placements
-- manage live field operations or incident action plans
-- create maintenance work orders, certify inspections, update registrations, or become the source of truth for service records
-- manage training courses, assessments or qualification records as the source of truth
-- assert that historical flood extent or past tactics remain current
-- automatically transfer people, vehicles or equipment
-- infer broad fatigue/rest evidence for volunteers
-- expose model/API keys or make a model the authority for capability feasibility; deterministic source-evidence calculations remain authoritative
+## Emergency Mesh never does
 
-## Language rules
+- dispatch, activate, task, deploy, route or issue tactical directions
+- track live field locations or present map points as live positions
+- assign members/assets to an active incident or automatically transfer resources
+- maintain rosters, training courses, qualifications, maintenance work orders or asset records as source of truth
+- certify compliance, infer fatigue/rest, or treat history as current operational instruction
+- allow an agent to approve, submit, transfer, allocate or mutate upstream/shared source data
 
-Use: `operational readiness`, `capability outcome`, `capability impact`, `support option`, `availability`, `draft request`, `approved support`, `reference prompt`, `review required`, `deployed`.
+## WebMCP and agent boundary
 
-Avoid imperatives such as: `dispatch`, `task`, `assign to incident`, `send crew`, `operational order`. `Deployed` is permitted only as a reported source status, not as an instruction.
+Page-defined WebMCP tools are registered with `document.modelContext.registerTool()` and return deterministic fictional evidence, including browser-local asset overrides for that judge's session. They can read readiness, people/asset evidence, preparedness/safety evidence, evaluate a planning scenario, identify dependencies, compare donor-safe support and prepare a **visible draft** for human review.
 
-Prefer: `trained`, `current`, `currency review required`, `capability offer`, `gap`, `resolution option`, `source-system data`.
+The browser agent may open the relevant review screen or Local support draft. It cannot send the request, approve it, allocate a resource or initiate operations. The optional server-side AI review is separate, uses a server-only key and four deterministic read tools only; it supplements WebMCP and is never capability authority.
 
-## Everyday readiness and PPRR
+## Language and map rules
 
-Emergency Mesh provides daily capability intelligence across prevention/mitigation, preparedness, response and recovery. `Operational readiness` is the everyday view; `Operational overview` presents the live or scenario-specific outcome. Maintenance, inspection, currency, availability, community-site and supplying-station-readiness signals can inform preparedness and recovery-capability reviews. Emergency Mesh does not replace preventative-maintenance, asset, roster, incident or recovery-case systems.
+Use `operational readiness`, `capability outcome`, `capability impact`, `support option`, `draft request`, `review required` and `Deployed` (reported source status only). Avoid `dispatch`, `task`, `send crew` and `operational order`.
 
-## Weather-source pattern
-
-Weather is an awareness input, not an operational trigger. A warning update may show `Review capability`; a human or browser agent must explicitly open the scenario before Emergency Mesh calculates an offer or surfaces support options. The operational management/CAD system remains responsible for incident control, dispatch and any field activity.
-
-## Map and location pattern
-
-An Asset locations map may show source-record locations for home-station assets, fictional deployed/maintenance examples and fictional operational incidents. It is geographic context only. It must carry clear non-live wording and OSM attribution where OSM tiles are used. It must not imply live tracking, routing, field location awareness, dispatch or tactical control.
-
-## Agent pattern
-
-WebMCP browser tools and an optional server-side review agent may query the same deterministic domain functions. The agent may inspect readiness, assess a plan, identify dependencies and compare aggregate donor-safe options. Any tool allow-list must exclude dispatch, activation, tasking, source mutation, transfer, routing and approval. The UI must show the agent’s tool trace, clearly identify the deterministic evidence result, and state that human review/approval remains required.
-
-The competition replay uses clearly labelled fictional weather data and resets to a known state. Optional live Bureau of Meteorology (BOM) data is not required for the demo. It must display warning type, area, issued/updated time, freshness, source attribution and a direct official-source link. If there is no relevant warning, show `No relevant warning received — no capability review triggered.` Do not use BOM branding as Emergency Mesh branding; follow the source feed's terms and attribution requirements.
-
-## Historical information
-
-Historical incident data is advisory only. Each reference must show source, date, age, currency, development/change warning, and current checks required. Current operational systems and authorised humans determine how, or whether, it is used.
+Asset locations and operational incidents are fictional source evidence on an attributed OSM base map. They provide geographic context only: no tracking, routing, dispatch or tactical control.
 
 ## Scope check
 
-Before adding a feature, ask:
-
-> Does this improve cross-system capability awareness, gap analysis, resolution options, provenance, or human-approved support?
-
-If not, it probably belongs in an operational management, CAD, asset, training, or communications system instead.
+Before adding a feature ask: does it improve cross-system evidence, capability awareness, gap analysis, provenance or human-reviewed support? If not, it belongs elsewhere.

@@ -23,17 +23,17 @@ export function evaluateMainDemoWithEvidence(evidence: { members: typeof members
   return evaluateCapabilityPlan({ homeUnitId: "harbour", demands: mainDemands, window: { startAt: demoScenario.startAt, endAt: demoScenario.endAt }, members: evidence.members, assets: evidence.assets });
 }
 
-export function findNeighbourSupport() {
-  return assets.filter((asset) => asset.unitId !== "harbour" && asset.type === "SPECIALIST_TRUCK" && asset.status === "AVAILABLE").map((asset) => {
+export function findNeighbourSupport(sourceAssets: Asset[] = assets) {
+  return sourceAssets.filter((asset) => asset.unitId !== "harbour" && asset.type === "SPECIALIST_TRUCK" && asset.status === "AVAILABLE").map((asset) => {
     const donor = units.find((unit) => unit.id === asset.unitId)!;
-    const available = assets.filter((candidate) => candidate.unitId === donor.id && candidate.type === "SPECIALIST_TRUCK" && candidate.status === "AVAILABLE");
+    const available = sourceAssets.filter((candidate) => candidate.unitId === donor.id && candidate.type === "SPECIALIST_TRUCK" && candidate.status === "AVAILABLE");
     const remaining = available.length - 1;
     return { resourceId: asset.id, resourceName: asset.name, supplyingUnitId: donor.id, supplyingUnitName: donor.name, eligible: remaining >= donor.minimumReadiness, donorImpact: { availableBefore: available.length, availableAfter: remaining, minimumReadiness: donor.minimumReadiness }, reason: remaining >= donor.minimumReadiness ? "Available for the requested window; donor remains above its configured minimum." : "Excluded because lending would breach donor minimum readiness." };
   }).filter((option) => option.eligible);
 }
 
-export function findMinimumInterventions() {
-  const support = findNeighbourSupport();
+export function findMinimumInterventions(sourceAssets: Asset[] = assets) {
+  const support = findNeighbourSupport(sourceAssets);
   const driver = members.find((member) => member.id === "V04")!;
   return [
     ...support.map((option) => ({ rank: 1, type: "VEHICLE_SUPPORT", label: `Request ${option.resourceName}`, detail: option.reason, resourceId: option.resourceId })),
@@ -42,8 +42,8 @@ export function findMinimumInterventions() {
 }
 
 /** Scenario-only recalculation. It records an assumed source-data change; it never changes a source system. */
-export function simulateResourceUnavailable(resourceId: string) {
-  const changedAssets = assets.map((asset) => asset.id === resourceId ? { ...asset, status: "OFFLINE_UNTIL" as const, offlineUntil: demoScenario.endAt } : asset);
+export function simulateResourceUnavailable(resourceId: string, sourceAssets: Asset[] = assets) {
+  const changedAssets = sourceAssets.map((asset) => asset.id === resourceId ? { ...asset, status: "OFFLINE_UNTIL" as const, offlineUntil: demoScenario.endAt } : asset);
   const changedMembers = members.map((member) => member.id === resourceId ? { ...member, availableUntil: demoScenario.startAt } : member);
   const result = evaluateCapabilityPlan({ homeUnitId: "harbour", demands: mainDemands, window: { startAt: demoScenario.startAt, endAt: demoScenario.endAt }, members: changedMembers, assets: changedAssets });
   return { status: "SCENARIO_ONLY", resourceId, result, note: "This is a simulated source-data change. No availability, asset, or operational system was changed." };
@@ -56,9 +56,9 @@ export function findSinglePointsOfFailure() {
   ];
 }
 
-export function compareSupportScenario() {
-  const baseline = evaluateMainDemo();
-  const supportedAssets = assets.map((asset) => asset.id === "R02" ? { ...asset, unitId: "harbour" as const } : asset);
+export function compareSupportScenario(sourceAssets: Asset[] = assets) {
+  const baseline = evaluateMainDemoWithAssets(sourceAssets);
+  const supportedAssets = sourceAssets.map((asset) => asset.id === "R02" ? { ...asset, unitId: "harbour" as const } : asset);
   const supported = evaluateCapabilityPlan({ homeUnitId: "harbour", demands: mainDemands, window: { startAt: demoScenario.startAt, endAt: demoScenario.endAt }, members, assets: supportedAssets });
   return {
     status: "SCENARIO_COMPARISON",
